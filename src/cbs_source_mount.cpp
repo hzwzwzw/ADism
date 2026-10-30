@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "win_util.h"
+#include "safety.h"
 #include "cbs_source_mount.h"
 #include <sddl.h>
 #include <objbase.h>
@@ -22,7 +23,7 @@ struct OwnedRepairMount::Impl {
     HMODULE dll = nullptr;
     HANDLE file = nullptr, image = nullptr;
     HANDLE recoveredFile = nullptr, recoveredImage = nullptr;
-    std::wstring root, mount, scratch, diagnostic;
+    std::wstring root, mount, scratch, diagnostic, errorDetail;
     bool rootOwned = false, mountOwned = false, scratchOwned = false;
     bool mounted = false, mountAttempted = false, registered = false;
     std::atomic_bool callbackFailed{false}, callbackActive{false};
@@ -233,11 +234,15 @@ const std::wstring &OwnedRepairMount::Path() const {
 std::wstring OwnedRepairMount::Windows() const {
     return impl_->mounted ? Join(impl_->mount, L"Windows") : std::wstring{};
 }
+const std::wstring &OwnedRepairMount::ErrorDetail() const {
+    return impl_->errorDetail;
+}
 HRESULT OwnedRepairMount::Close() {
     return impl_->Close();
 }
 HRESULT OwnedRepairMount::Open(const std::wstring &wim, unsigned index, std::atomic_bool &cancel,
-                               const std::function<void(int, const std::wstring &)> &progress) {
+                               const std::function<void(int, const std::wstring &)> &progress,
+                               const std::wstring &workRoot) {
     auto &s = *impl_;
     if (s.rootOwned || s.dll || s.file || s.image || s.mounted)
         return HRESULT_FROM_WIN32(ERROR_BUSY);
@@ -248,15 +253,42 @@ HRESULT OwnedRepairMount::Open(const std::wstring &wim, unsigned index, std::ato
     s.cancel = &cancel;
     s.progress = progress;
     s.callbackFailed = false;
+    s.errorDetail.clear();
+    const wchar_t *stage = L"验证工作分区";
     auto fail = [&](HRESULT primary) {
+        wchar_t code[16]{};
+        swprintf(code, 16, L"0x%08X", unsigned(primary));
+        s.errorDetail = std::wstring(stage) + L"失败：" + code;
+        if (!s.root.empty())
+            s.errorDetail += L"；挂载目录=" + s.mount + L"；临时目录=" + s.scratch;
+        s.Report(s.errorDetail);
         s.callbackActive = false;
         HRESULT cleanup = s.Close();
+        if (cleanup != S_OK) {
+            swprintf(code, 16, L"0x%08X", unsigned(cleanup));
+            s.errorDetail += L"；清理失败：" + std::wstring(code);
+        }
         return cleanup == S_OK ? primary : cleanup;
     };
-    wchar_t temp[32768];
-    DWORD length = GetTempPathW(32768, temp);
-    if (!length || length >= 32768)
-        return fail(length >= 32768 ? HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER) : LastErrorHr());
+    std::wstring base = workRoot;
+    if (base.empty()) {
+        wchar_t windows[32768]{};
+        UINT n = GetWindowsDirectoryW(windows, 32768);
+        if (!n || n >= 32768)
+            return fail(E_INVALIDARG);
+        base = std::wstring(windows, 3);
+    }
+    LocalRoot volume;
+    HRESULT inspect = InspectRoot(base, volume);
+    if (inspect != S_OK)
+        return fail(inspect);
+    if (_wcsicmp(volume.filesystem.c_str(), L"NTFS"))
+        return fail(HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+    if (volume.readOnly)
+        return fail(E_ACCESSDENIED);
+    if (!s.Report(L"修复源工作分区：" + volume.root + L"；卷=" + volume.volume + L"；文件系统=NTFS"))
+        return fail(E_FAIL);
+    stage = L"创建工作目录标识";
     GUID id{};
     HRESULT hr = CoCreateGuid(&id);
     if (hr != S_OK)
@@ -264,7 +296,7 @@ HRESULT OwnedRepairMount::Open(const std::wstring &wim, unsigned index, std::ato
     wchar_t guid[40];
     if (!StringFromGUID2(id, guid, 40))
         return fail(E_FAIL);
-    s.root = Join(temp, (L"ADism-RepairSource-" + std::wstring(guid)).c_str());
+    s.root = Join(volume.root, (L"ADism-RepairSource-" + std::wstring(guid)).c_str());
     s.mount = Join(s.root, L"Mount");
     s.scratch = Join(s.root, L"Scratch");
     s.diagnostic = s.root;
@@ -276,15 +308,18 @@ HRESULT OwnedRepairMount::Open(const std::wstring &wim, unsigned index, std::ato
                                                               SDDL_REVISION_1, &descriptor, nullptr))
         return fail(LastErrorHr());
     SECURITY_ATTRIBUTES attributes = {sizeof(attributes), descriptor, FALSE};
+    stage = L"创建独占工作目录";
     BOOL made = CreateDirectoryW(s.root.c_str(), &attributes);
     DWORD error = GetLastError();
     LocalFree(descriptor);
     if (!made)
         return fail(HRESULT_FROM_WIN32(error ? error : ERROR_GEN_FAILURE));
     s.rootOwned = true;
+    stage = L"创建挂载目录";
     if (!CreateDirectoryW(s.mount.c_str(), nullptr))
         return fail(LastErrorHr());
     s.mountOwned = true;
+    stage = L"创建临时工作目录";
     if (!CreateDirectoryW(s.scratch.c_str(), nullptr))
         return fail(LastErrorHr());
     s.scratchOwned = true;
@@ -292,6 +327,7 @@ HRESULT OwnedRepairMount::Open(const std::wstring &wim, unsigned index, std::ato
         return fail(E_FAIL);
     if (cancel.load())
         return fail(kCancelled);
+    stage = L"加载系统 WIMGAPI";
     s.dll = LoadLibraryExW(L"wimgapi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (!s.dll)
         return fail(LastErrorHr());
@@ -310,12 +346,15 @@ HRESULT OwnedRepairMount::Open(const std::wstring &wim, unsigned index, std::ato
     if (!s.create || !s.load || !s.close || !s.temp || !s.reg || !s.unreg || !s.mountImage || !s.getMounted ||
         !s.unmountImage || !s.getMountInfo)
         return fail(HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND));
+    stage = L"打开修复 WIM";
     DWORD disposition = 0;
     s.file = s.create(wim.c_str(), GENERIC_READ | GENERIC_EXECUTE, OPEN_EXISTING, 0, 0, &disposition);
     if (!s.file || s.file == INVALID_HANDLE_VALUE)
         return fail(LastErrorHr());
+    stage = L"设置 WIM 临时目录";
     if (!s.temp(s.file, s.scratch.c_str()))
         return fail(LastErrorHr());
+    stage = L"读取 WIM 映像索引";
     s.image = s.load(s.file, index);
     if (!s.image)
         return fail(LastErrorHr());
@@ -325,6 +364,7 @@ HRESULT OwnedRepairMount::Open(const std::wstring &wim, unsigned index, std::ato
     s.registered = true;
     if (cancel.load())
         return fail(kCancelled);
+    stage = L"只读挂载 WIM";
     s.mountAttempted = true;
     BOOL success = s.mountImage(s.image, s.mount.c_str(), kReadOnly);
     error = GetLastError();

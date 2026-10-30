@@ -11,6 +11,13 @@ int wmain(){int failures=0,cases=0;auto check=[&](bool ok,const char*n){++cases;
  SendMessageW(h,WM_COMMAND,MODE_SFC,0);check(Flow()==2&&!IsWindowVisible(GetDlgItem(h,SOURCE_KIND))&&!IsWindowVisible(GetDlgItem(h,FULL_PAYLOAD)),"SFC-no-source");
  SendDlgItemMessageW(h,ONLINE,BM_SETCHECK,BST_UNCHECKED,0);SendMessageW(h,WM_COMMAND,ONLINE,0);check(GetDlgItem(h,211)==nullptr,"offline-SFC-no-boot-input");
  SendMessageW(h,WM_COMMAND,MODE_BOTH,0);check(Flow()==1&&IsWindowVisible(GetDlgItem(h,SOURCE_KIND))&&GetDlgItem(h,211)==nullptr,"both-fields");check(SendDlgItemMessageW(h,SOURCE_KIND,CB_GETCOUNT,0,0)==3&&Text(SOURCE_KIND)==L"自动","offline-no-WU-option");
+ SendDlgItemMessageW(h,SOURCE_KIND,CB_SETCURSEL,2,0);SendMessageW(h,WM_COMMAND,MAKEWPARAM(SOURCE_KIND,CBN_SELCHANGE),LPARAM(GetDlgItem(h,SOURCE_KIND)));
+ check(IsWindowVisible(GetDlgItem(h,REPAIR_WORK_ROOT))&&Text(REPAIR_WORK_ROOT).empty(),"WIM-work-default-system");
+ SetDlgItemTextW(h,REPAIR_WORK_ROOT,L"E:\\");SendDlgItemMessageW(h,SOURCE_KIND,CB_SETCURSEL,0,0);SendMessageW(h,WM_COMMAND,MAKEWPARAM(SOURCE_KIND,CBN_SELCHANGE),LPARAM(GetDlgItem(h,SOURCE_KIND)));
+ check(!IsWindowVisible(GetDlgItem(h,REPAIR_WORK_ROOT)),"non-WIM-work-hidden");
+ SendDlgItemMessageW(h,SOURCE_KIND,CB_SETCURSEL,2,0);SendMessageW(h,WM_COMMAND,MAKEWPARAM(SOURCE_KIND,CBN_SELCHANGE),LPARAM(GetDlgItem(h,SOURCE_KIND)));
+ check(Text(REPAIR_WORK_ROOT)==L"E:\\","WIM-work-selection-retained");
+ SetDlgItemTextW(h,REPAIR_WORK_ROOT,L"");
  SetBusy(true);check((GetWindowLongPtrW(progress,GWL_STYLE)&PBS_MARQUEE)!=0&&Text(PROGRESS_TEXT)==L"进行中","start-indeterminate");
  SendMessageW(h,WM_COMMAND,MODE_SFC,0);check(Flow()==1&&!IsWindowEnabled(GetDlgItem(h,MODE_SFC)),"busy-lock");
  SendMessageW(h,WM_PROGRESS,0,LPARAM(new Notice{37,L"CBS 正在处理组件存储"}));check(SendMessageW(progress,PBM_GETPOS,0,0)==37&&Text(PROGRESS_TEXT)==L"37%"&&!(GetWindowLongPtrW(progress,GWL_STYLE)&PBS_MARQUEE),"CBS-real-percent");
@@ -27,6 +34,6 @@ int wmain(){int failures=0,cases=0;auto check=[&](bool ok,const char*n){++cases;
  if(GetProcAddress(GetModuleHandleW(L"ntdll.dll"),"wine_get_version")==nullptr){std::wstring error;auto rows=workbench::EnumeratePartitions(error);int testRow=-1;for(size_t i=0;i<rows.size();++i)if(rows[i].label==L"ADISM06_NTFS"&&rows[i].letters.empty())testRow=int(i);check(testRow>=0,"native-no-letter-fixture");if(testRow>=0){
  static int selectedRow;selectedRow=testRow;
  auto timer=[](HWND,UINT,UINT_PTR id,DWORD){auto picker=FindWindowW(L"ADism.Partitions",nullptr);if(!picker)return;KillTimer(nullptr,id);auto list=GetDlgItem(picker,1);ListView_SetItemState(list,selectedRow,LVIS_SELECTED|LVIS_FOCUSED,LVIS_SELECTED|LVIS_FOCUSED);PostMessageW(picker,WM_COMMAND,IDOK,0);};
- for(int field:{DEST,BOOTPART,ROOT}){SetTimer(nullptr,0,300,timer);ChoosePartition(field);check(selectedPartitions.count(field)&&Text(field).find(L"硬盘")!=std::wstring::npos,"picker-field");}
+ for(int field:{DEST,BOOTPART,ROOT,REPAIR_WORK_ROOT}){SetTimer(nullptr,0,300,timer);ChoosePartition(field);check(selectedPartitions.count(field)&&Text(field).find(L"硬盘")!=std::wstring::npos,"picker-field");}
  rows=workbench::EnumeratePartitions(error);bool unchanged=false;for(const auto&c:rows)if(c.label==L"ADISM06_NTFS")unchanged=c.letters.empty();check(unchanged,"selection-does-not-mount");std::wstring root=Text(ROOT);check(ResolvePartition(ROOT,root)&&root.size()==3,"GUI-resolve-no-letter");SetBusy(true);cancelled=true;SetBusy(false);rows=workbench::EnumeratePartitions(error);bool cleaned=false;for(const auto&c:rows)if(c.label==L"ADISM06_NTFS")cleaned=c.letters.empty();check(cleaned,"GUI-finish-cleans-after-stop");}}
  DestroyWindow(h);CoUninitialize();std::cout<<"cases="<<cases<<" failures="<<failures<<std::endl;return failures?1:0;}

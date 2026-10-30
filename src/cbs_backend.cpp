@@ -744,6 +744,12 @@ struct SourceLease {
     }
 };
 HRESULT ValidateNetworkSource(const CbsOptions &o, std::wstring &detail) {
+    if (!o.repairWorkRoot.empty() &&
+        (o.online || o.sourceKind != RepairSourceKind::Wim || o.operation != CbsOperation::Restore ||
+         !DriveRootSyntax(o.repairWorkRoot))) {
+        detail = L"工作分区仅用于离线 WIM 修复来源。";
+        return E_INVALIDARG;
+    }
     if (o.sourceKind == RepairSourceKind::WindowsUpdate) {
         if (!o.online) {
             detail = L"Windows Update 修复来源仅支持当前运行的 Windows；离线目标请使用匹配的 WIM 或 Windows "
@@ -807,7 +813,8 @@ HRESULT PrepareSource(const CbsOptions &o, const std::wstring &root, const std::
     }
     Report(progress, -1, L"目标：" + ProfileText(target));
     auto path = Canonical(o.source);
-    if (path.empty() || StartsI(path, L"\\\\") || (o.sourceKind == RepairSourceKind::Wim && !OrdinaryPath(path))) {
+    if (path.empty() || StartsI(path, L"\\\\") ||
+        (o.sourceKind == RepairSourceKind::Wim && !OrdinaryPath(path))) {
         detail = L"请选择本地可访问的 WIM 文件或完整 Windows 目录。";
         return E_INVALIDARG;
     }
@@ -882,10 +889,11 @@ HRESULT PrepareSource(const CbsOptions &o, const std::wstring &root, const std::
         if (cancel.load())
             return kCancelled;
         Report(progress, -1, L"正在以只读方式加载修复映像");
-        hr = lease.mount.Open(path, o.sourceIndex, cancel, progress);
+        hr = lease.mount.Open(path, o.sourceIndex, cancel, progress,
+                              o.repairWorkRoot.empty() ? o.root : o.repairWorkRoot);
         if (hr != S_OK) {
-            detail = L"无法只读加载修复 WIM。请确认 WIM "
-                     L"挂载服务可用，映像未被其他程序占用；也可手动只读挂载后选择目录来源。";
+            detail = L"无法只读加载修复 WIM：" + lease.mount.ErrorDetail() +
+                     L"。请核对工作分区、WIM 路径与挂载组件；也可手动只读挂载后选择目录来源。";
             return hr;
         }
         source = lease.mount.Windows();

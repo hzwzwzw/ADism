@@ -19,6 +19,7 @@ struct CbsOptions {
     RepairSourceKind sourceKind = RepairSourceKind::Default;
     std::wstring source;
     unsigned sourceIndex = 0;
+    std::wstring repairWorkRoot; // Empty: offline target system partition. Used only by offline WIM sources.
 };
 struct CbsResult {
     HRESULT hr = E_FAIL;

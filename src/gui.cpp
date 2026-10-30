@@ -63,6 +63,8 @@ enum {
     WORKFLOW = 216,
     MODE_BOTH = 217,
     MODE_SFC = 218,
+    REPAIR_WORK_ROOT = 219,
+    REPAIR_WORK_BROWSE = 220,
     PROGRESS_TEXT = 714,
     NAV_WIM = 701,
     NAV_REPAIR = 702,
@@ -462,12 +464,38 @@ void RefreshEnabled() {
     if (!GetDlgItem(window, WORKFLOW))
         return;
     SourceChoices();
-    for (int id : std::vector<int>{SOURCE,      LOAD,          IMAGES,        DEST,         BOOT,
-                                   WTG,         BOOTPART,      FIRMWARE,      APPLY,        ONLINE,
-                                   ROOT,        SCAN,          RESTORE,       SOURCE_KIND,  REPAIR_PATH,
-                                   REPAIR_LOAD, REPAIR_IMAGES, REPAIR_BROWSE, FULL_PAYLOAD, WORKFLOW,
-                                   MODE_BOTH,   MODE_SFC,      PART_BOOT,     BOOT_TOOL,    BOOT_TOOL_BROWSE,
-                                   401,         402,           404,           NAV_WIM,      NAV_REPAIR})
+    for (int id : std::vector<int>{REPAIR_WORK_ROOT,
+                                   REPAIR_WORK_BROWSE,
+                                   SOURCE,
+                                   LOAD,
+                                   IMAGES,
+                                   DEST,
+                                   BOOT,
+                                   WTG,
+                                   BOOTPART,
+                                   FIRMWARE,
+                                   APPLY,
+                                   ONLINE,
+                                   ROOT,
+                                   SCAN,
+                                   RESTORE,
+                                   SOURCE_KIND,
+                                   REPAIR_PATH,
+                                   REPAIR_LOAD,
+                                   REPAIR_IMAGES,
+                                   REPAIR_BROWSE,
+                                   FULL_PAYLOAD,
+                                   WORKFLOW,
+                                   MODE_BOTH,
+                                   MODE_SFC,
+                                   PART_BOOT,
+                                   BOOT_TOOL,
+                                   BOOT_TOOL_BROWSE,
+                                   401,
+                                   402,
+                                   404,
+                                   NAV_WIM,
+                                   NAV_REPAIR})
         EnableWindow(GetDlgItem(window, id), !busy);
     EnableWindow(GetDlgItem(window, CANCEL), busy && !cancelled);
     EnableWindow(GetDlgItem(window, SOURCE_KIND), !busy && UsesCbs());
@@ -635,6 +663,8 @@ servicing::CbsResult IsolatedCbs(const servicing::CbsOptions &o) {
         command += L" --windows-update";
     else if (o.sourceKind == servicing::RepairSourceKind::LocalOnly)
         command += L" --local-only";
+    if (!o.repairWorkRoot.empty())
+        command += L" --repair-work-root " + Quote(o.repairWorkRoot);
     command += o.fullPayloadCheck ? L" --full-payload" : L" --automatic-compat";
     workbench::Log(command, false, L"CBS 命令", workbench::LogLevel::Detail);
     SIZE_T bytes = 0;
@@ -1143,6 +1173,8 @@ void Launch(int kind) {
             o.sourceKind = servicing::RepairSourceKind::Wim;
             o.source = Text(REPAIR_PATH);
             o.sourceIndex = repairImages[selected].index;
+            if (!o.online)
+                o.repairWorkRoot = Text(REPAIR_WORK_ROOT);
         } else if (sourceKind == 3) {
             o.sourceKind = servicing::RepairSourceKind::WindowsUpdate;
             o.fullPayloadCheck = true;
@@ -1174,6 +1206,14 @@ void Launch(int kind) {
         if (!ResolvePartition(ROOT, o.root))
             return;
         sfc.root = o.root;
+        if (!o.repairWorkRoot.empty() && !ResolvePartition(REPAIR_WORK_ROOT, o.repairWorkRoot))
+            return;
+        if (!o.repairWorkRoot.empty() && !servicing::DriveRootSyntax(o.repairWorkRoot)) {
+            partitionAccess.Clear();
+            MessageBoxW(window, L"工作分区请输入盘符根目录（例如 E:\\），或使用分区选择；留空使用系统分区。",
+                        L"工作分区", MB_ICONINFORMATION);
+            return;
+        }
     }
     SetBusy(true);
     Append(kind == 3 ? L"开始验证受损。" : L"开始修复受损。");
@@ -1333,7 +1373,10 @@ void Layout() {
             Place(FULL_PAYLOAD, x + 22, y + 66, cw - 44, 30);
         y += wh + 16;
         int kind = int(SendDlgItemMessageW(window, SOURCE_KIND, CB_GETCURSEL, 0, 0));
-        int sh = cbs && kind == 2 ? 164 : cbs && kind == 1 ? 116 : cbs && kind == 3 ? 104 : 72;
+        int sh = cbs && kind == 2   ? (offline ? 212 : 164)
+                 : cbs && kind == 1 ? 116
+                 : cbs && kind == 3 ? 104
+                                    : 72;
         if (cbs)
             Card(x, y, cw, sh);
         for (int id : std::vector<int>{521, SOURCE_KIND})
@@ -1348,6 +1391,13 @@ void Layout() {
             Visibility(id, custom);
         for (int id : std::vector<int>{524, REPAIR_IMAGES, REPAIR_LOAD})
             Visibility(id, wim);
+        for (int id : std::vector<int>{530, REPAIR_WORK_ROOT, REPAIR_WORK_BROWSE})
+            Visibility(id, wim && offline);
+        if (wim && offline) {
+            Place(530, x + 22, y + 168, 82, 24);
+            Place(REPAIR_WORK_ROOT, x + 112, y + 160, cw - 216, 34);
+            Place(REPAIR_WORK_BROWSE, w - 104, y + 160, 80, 34);
+        }
         if (custom) {
             Place(523, x + 22, y + 72, 82, 24);
             Place(REPAIR_PATH, x + 112, y + 64, cw - (wim ? 300 : 216), 34);
@@ -1460,6 +1510,11 @@ void Init() {
     Control(L"BUTTON", L"读取", WS_TABSTOP, REPAIR_LOAD, 1);
     Control(L"STATIC", L"映像版本", 0, 524, 1);
     Control(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, REPAIR_IMAGES, 1);
+    Control(L"STATIC", L"工作分区", 0, 530, 1);
+    Control(L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP, REPAIR_WORK_ROOT, 1);
+    Control(L"BUTTON", L"分区…", WS_TABSTOP, REPAIR_WORK_BROWSE, 1);
+    SendDlgItemMessageW(window, REPAIR_WORK_ROOT, EM_SETCUEBANNER, TRUE,
+                        LPARAM(L"默认：待修复 Windows 所在分区；留空恢复默认"));
     Control(L"BUTTON", L"验证受损", WS_TABSTOP, SCAN, 1);
     Control(L"BUTTON", L"修复受损", WS_TABSTOP, RESTORE, 1);
     status = Control(L"STATIC", L"就绪", SS_LEFTNOWORDWRAP, STATUS, -1);
@@ -1620,7 +1675,7 @@ void Paint() {
         FillRect(dc, &accent, blue);
         DeleteObject(blue);
     }
-    for (int id : std::vector<int>{SOURCE, DEST, BOOTPART, ROOT, REPAIR_PATH}) {
+    for (int id : std::vector<int>{SOURCE, DEST, BOOTPART, ROOT, REPAIR_PATH, REPAIR_WORK_ROOT}) {
         auto child = GetDlgItem(window, id);
         if (!IsWindowVisible(child))
             continue;
@@ -1656,8 +1711,12 @@ void LaunchWorkflow(bool repair) {
         config += L"; 请求来源=" + Text(SOURCE_KIND);
         if (sourceKind == 1 || sourceKind == 2)
             config += L"; 路径=" + Text(REPAIR_PATH);
-        if (sourceKind == 2)
+        if (sourceKind == 2) {
             config += L"; 映像=" + Text(REPAIR_IMAGES);
+            if (!Checked(ONLINE))
+                config += L"; 工作分区=" +
+                          (Text(REPAIR_WORK_ROOT).empty() ? L"系统分区（默认）" : Text(REPAIR_WORK_ROOT));
+        }
     }
     workbench::Log(config, false, L"配置", workbench::LogLevel::Detail);
     Launch(flow == 2 ? (repair ? 7 : 6) : (repair ? 4 : 3));
@@ -1774,6 +1833,9 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case BOOT_TOOL_BROWSE:
             BrowseFile(BOOT_TOOL);
             return 0;
+        case REPAIR_WORK_BROWSE:
+            ChoosePartition(REPAIR_WORK_ROOT);
+            return 0;
         case PART_BOOT:
             ChoosePartition(BOOTPART);
             return 0;
@@ -1837,6 +1899,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case DEST:
         case ROOT:
         case REPAIR_PATH:
+        case REPAIR_WORK_ROOT:
         case BOOTPART:
             if (HIWORD(w) == EN_SETFOCUS || HIWORD(w) == EN_KILLFOCUS) {
                 InvalidateRect(window, nullptr, FALSE);
@@ -2066,6 +2129,7 @@ int SfcWorker(int count, wchar_t **args) {
 int Worker(int count, wchar_t **args) {
     HANDLE pipe = nullptr, event = nullptr;
     servicing::CbsOptions o;
+    unsigned workCount = 0;
     unsigned pipeCount = 0, eventCount = 0, targetCount = 0, operationCount = 0, sourceCount = 0,
              indexCount = 0, modeCount = 0;
     auto number = [](const std::wstring &s) -> unsigned long long {
@@ -2113,6 +2177,12 @@ int Worker(int count, wchar_t **args) {
                     return 2;
                 o.sourceKind = servicing::RepairSourceKind::Wim;
                 o.source = args[++i];
+            } else if (a == L"--repair-work-root" && i + 1 < count) {
+                if (++workCount != 1)
+                    return 2;
+                o.repairWorkRoot = args[++i];
+                if (!servicing::DriveRootSyntax(o.repairWorkRoot))
+                    return 2;
             } else if (a == L"--source-index" && i + 1 < count) {
                 auto value = number(args[++i]);
                 if (++indexCount > 1 || !value || value > 0xffffffffu)
@@ -2144,6 +2214,9 @@ int Worker(int count, wchar_t **args) {
     if (pipeCount != 1 || eventCount != 1 || targetCount != 1 || operationCount != 1 || !pipe || !event ||
         !GetHandleInformation(pipe, &flags) || !GetHandleInformation(event, &flags) ||
         GetFileType(pipe) != FILE_TYPE_PIPE || WaitForSingleObject(event, 0) == WAIT_FAILED)
+        return 2;
+    if (workCount && (o.online || o.sourceKind != servicing::RepairSourceKind::Wim ||
+                      o.operation != servicing::CbsOperation::Restore))
         return 2;
     if ((o.sourceKind == servicing::RepairSourceKind::Wim) != (indexCount == 1))
         return 2;

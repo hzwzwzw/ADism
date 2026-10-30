@@ -14,10 +14,12 @@ class OwnedRepairMount {
     OwnedRepairMount(const OwnedRepairMount &) = delete;
     OwnedRepairMount &operator=(const OwnedRepairMount &) = delete;
     HRESULT Open(const std::wstring &wim, unsigned index, std::atomic_bool &cancel,
-                 const std::function<void(int, const std::wstring &)> &progress);
+                 const std::function<void(int, const std::wstring &)> &progress,
+                 const std::wstring &workRoot = L"");
     HRESULT Close();
     std::wstring Windows() const;
     const std::wstring &Path() const;
+    const std::wstring &ErrorDetail() const;
 
   private:
     struct Impl;
