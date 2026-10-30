@@ -16,6 +16,8 @@ if(MINGW)
   target_compile_options(ADism PRIVATE -Wall -Wextra -Wno-unknown-pragmas)
 elseif(MSVC)
   target_compile_options(ADism PRIVATE /utf-8 /W4 /EHsc)
+  # app.rc already embeds the administrator/compatibility manifest.
+  target_link_options(ADism PRIVATE /MANIFEST:NO)
 endif()
 
 include(CTest)

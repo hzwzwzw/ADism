@@ -32,7 +32,7 @@ struct GroupBuffer {
     uint64_t total = 0;
     bool clipped = false;
 };
-std::array<GroupBuffer, 9> groups;
+std::array<GroupBuffer, 9> groupBuffers;
 std::wstring Lower(std::wstring s) {
     std::transform(s.begin(), s.end(), s.begin(), towlower);
     return s;
@@ -66,7 +66,7 @@ int Group(const std::wstring &text, const std::wstring &scope, LogLevel level, b
     return 8;
 }
 void StoreGroup(int index, const std::wstring &row) {
-    auto &g = groups[index];
+    auto &g = groupBuffers[index];
     ++g.total;
     g.size += row.size();
     g.rows.push_back(row);
@@ -173,7 +173,7 @@ std::wstring DisplayText(std::wstring text) {
 void StartLog(const std::wstring &p) {
     std::lock_guard<std::mutex> lock(mutex);
     path = p;
-    groups = {};
+    groupBuffers = {};
     fullRows.clear();
     briefRows.clear();
     fullSize = briefSize = 0;
@@ -240,8 +240,8 @@ std::wstring LogText(bool full) {
 std::vector<LogGroup> StructuredLog() {
     std::lock_guard<std::mutex> lock(mutex);
     std::vector<LogGroup> result;
-    for (size_t i = 0; i < groups.size(); ++i) {
-        const auto &g = groups[i];
+    for (size_t i = 0; i < groupBuffers.size(); ++i) {
+        const auto &g = groupBuffers[i];
         result.push_back({groupNames[i], g.total, g.clipped, {g.rows.begin(), g.rows.end()}});
     }
     if (fileFailed)
