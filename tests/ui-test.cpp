@@ -3,14 +3,14 @@
 #undef wWinMain
 #include <iostream>
 int wmain(){int failures=0,cases=0;auto check=[&](bool ok,const char*n){++cases;std::cout<<n<<"="<<ok<<std::endl;if(!ok)++failures;};instance=GetModuleHandleW(nullptr);CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);INITCOMMONCONTROLSEX ic{sizeof(ic),ICC_PROGRESS_CLASS|ICC_TREEVIEW_CLASSES|ICC_LISTVIEW_CLASSES};InitCommonControlsEx(&ic);preview=true;WNDCLASSEXW wc{};wc.cbSize=sizeof(wc);wc.lpfnWndProc=WndProc;wc.hInstance=instance;wc.lpszClassName=L"ADism.UiTest";RegisterClassExW(&wc);auto h=CreateWindowExW(0,wc.lpszClassName,L"ADism UI TEST",WS_OVERLAPPEDWINDOW|WS_CLIPCHILDREN,0,0,1080,980,nullptr,nullptr,instance,nullptr);if(!h)return 2;ShowWindow(h,SW_SHOW);ShowWindow(h,SW_SHOW);ShowPage(1);
- SendMessageW(h,WM_COMMAND,WORKFLOW,0);check(Flow()==0&&IsWindowVisible(GetDlgItem(h,SOURCE_KIND))&&!IsWindowVisible(GetDlgItem(h,SFC_BOOT)),"CBS-fields");
+ SendMessageW(h,WM_COMMAND,WORKFLOW,0);check(Flow()==0&&IsWindowVisible(GetDlgItem(h,SOURCE_KIND))&&GetDlgItem(h,211)==nullptr,"CBS-fields");
  SendDlgItemMessageW(h,SOURCE_KIND,CB_SETCURSEL,3,0);SendMessageW(h,WM_COMMAND,MAKEWPARAM(SOURCE_KIND,CBN_SELCHANGE),LPARAM(GetDlgItem(h,SOURCE_KIND)));
  check(Text(SOURCE_KIND)==L"Windows Update"&&SendDlgItemMessageW(h,SOURCE_KIND,CB_GETCOUNT,0,0)==4,"WU-online-option");
  check(Checked(FULL_PAYLOAD)&&!IsWindowEnabled(GetDlgItem(h,FULL_PAYLOAD)),"WU-full-check-required");
  check(!IsWindowVisible(GetDlgItem(h,REPAIR_PATH))&&!IsWindowVisible(GetDlgItem(h,REPAIR_IMAGES))&&IsWindowVisible(GetDlgItem(h,528)),"WU-no-local-fields");
  SendMessageW(h,WM_COMMAND,MODE_SFC,0);check(Flow()==2&&!IsWindowVisible(GetDlgItem(h,SOURCE_KIND))&&!IsWindowVisible(GetDlgItem(h,FULL_PAYLOAD)),"SFC-no-source");
- SendDlgItemMessageW(h,ONLINE,BM_SETCHECK,BST_UNCHECKED,0);SendMessageW(h,WM_COMMAND,ONLINE,0);check(IsWindowVisible(GetDlgItem(h,SFC_BOOT)),"offline-SFC-boot");
- SendMessageW(h,WM_COMMAND,MODE_BOTH,0);check(Flow()==1&&IsWindowVisible(GetDlgItem(h,SOURCE_KIND))&&IsWindowVisible(GetDlgItem(h,SFC_BOOT)),"both-fields");check(SendDlgItemMessageW(h,SOURCE_KIND,CB_GETCOUNT,0,0)==3&&Text(SOURCE_KIND)==L"自动","offline-no-WU-option");
+ SendDlgItemMessageW(h,ONLINE,BM_SETCHECK,BST_UNCHECKED,0);SendMessageW(h,WM_COMMAND,ONLINE,0);check(GetDlgItem(h,211)==nullptr,"offline-SFC-no-boot-input");
+ SendMessageW(h,WM_COMMAND,MODE_BOTH,0);check(Flow()==1&&IsWindowVisible(GetDlgItem(h,SOURCE_KIND))&&GetDlgItem(h,211)==nullptr,"both-fields");check(SendDlgItemMessageW(h,SOURCE_KIND,CB_GETCOUNT,0,0)==3&&Text(SOURCE_KIND)==L"自动","offline-no-WU-option");
  SetBusy(true);check((GetWindowLongPtrW(progress,GWL_STYLE)&PBS_MARQUEE)!=0&&Text(PROGRESS_TEXT)==L"进行中","start-indeterminate");
  SendMessageW(h,WM_COMMAND,MODE_SFC,0);check(Flow()==1&&!IsWindowEnabled(GetDlgItem(h,MODE_SFC)),"busy-lock");
  SendMessageW(h,WM_PROGRESS,0,LPARAM(new Notice{37,L"CBS 正在处理组件存储"}));check(SendMessageW(progress,PBM_GETPOS,0,0)==37&&Text(PROGRESS_TEXT)==L"37%"&&!(GetWindowLongPtrW(progress,GWL_STYLE)&PBS_MARQUEE),"CBS-real-percent");
@@ -27,6 +27,6 @@ int wmain(){int failures=0,cases=0;auto check=[&](bool ok,const char*n){++cases;
  if(GetProcAddress(GetModuleHandleW(L"ntdll.dll"),"wine_get_version")==nullptr){std::wstring error;auto rows=workbench::EnumeratePartitions(error);int testRow=-1;for(size_t i=0;i<rows.size();++i)if(rows[i].label==L"ADISM06_NTFS"&&rows[i].letters.empty())testRow=int(i);check(testRow>=0,"native-no-letter-fixture");if(testRow>=0){
  static int selectedRow;selectedRow=testRow;
  auto timer=[](HWND,UINT,UINT_PTR id,DWORD){auto picker=FindWindowW(L"ADism.Partitions",nullptr);if(!picker)return;KillTimer(nullptr,id);auto list=GetDlgItem(picker,1);ListView_SetItemState(list,selectedRow,LVIS_SELECTED|LVIS_FOCUSED,LVIS_SELECTED|LVIS_FOCUSED);PostMessageW(picker,WM_COMMAND,IDOK,0);};
- for(int field:{DEST,BOOTPART,ROOT,SFC_BOOT}){SetTimer(nullptr,0,300,timer);ChoosePartition(field);check(selectedPartitions.count(field)&&Text(field).find(L"硬盘")!=std::wstring::npos,"picker-field");}
+ for(int field:{DEST,BOOTPART,ROOT}){SetTimer(nullptr,0,300,timer);ChoosePartition(field);check(selectedPartitions.count(field)&&Text(field).find(L"硬盘")!=std::wstring::npos,"picker-field");}
  rows=workbench::EnumeratePartitions(error);bool unchanged=false;for(const auto&c:rows)if(c.label==L"ADISM06_NTFS")unchanged=c.letters.empty();check(unchanged,"selection-does-not-mount");std::wstring root=Text(ROOT);check(ResolvePartition(ROOT,root)&&root.size()==3,"GUI-resolve-no-letter");SetBusy(true);cancelled=true;SetBusy(false);rows=workbench::EnumeratePartitions(error);bool cleaned=false;for(const auto&c:rows)if(c.label==L"ADISM06_NTFS")cleaned=c.letters.empty();check(cleaned,"GUI-finish-cleans-after-stop");}}
  DestroyWindow(h);CoUninitialize();std::cout<<"cases="<<cases<<" failures="<<failures<<std::endl;return failures?1:0;}

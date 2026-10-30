@@ -57,11 +57,9 @@ enum {
     REPAIR_IMAGES = 208,
     REPAIR_BROWSE = 209,
     FULL_PAYLOAD = 210,
-    SFC_BOOT = 211,
     SFC_CHAIN = 212,
     SFC_VERIFY = 213,
     SFC_REPAIR = 214,
-    SFC_BROWSE = 215,
     WORKFLOW = 216,
     MODE_BOTH = 217,
     MODE_SFC = 218,
@@ -464,17 +462,12 @@ void RefreshEnabled() {
     if (!GetDlgItem(window, WORKFLOW))
         return;
     SourceChoices();
-    for (int id : std::vector<int>{SOURCE,       LOAD,          IMAGES,
-                                   DEST,         BOOT,          WTG,
-                                   BOOTPART,     FIRMWARE,      APPLY,
-                                   ONLINE,       ROOT,          SCAN,
-                                   RESTORE,      SOURCE_KIND,   REPAIR_PATH,
-                                   REPAIR_LOAD,  REPAIR_IMAGES, REPAIR_BROWSE,
-                                   FULL_PAYLOAD, SFC_BOOT,      SFC_BROWSE,
-                                   WORKFLOW,     MODE_BOTH,     MODE_SFC,
-                                   PART_BOOT,    BOOT_TOOL,     BOOT_TOOL_BROWSE,
-                                   401,          402,           404,
-                                   NAV_WIM,      NAV_REPAIR})
+    for (int id : std::vector<int>{SOURCE,      LOAD,          IMAGES,        DEST,         BOOT,
+                                   WTG,         BOOTPART,      FIRMWARE,      APPLY,        ONLINE,
+                                   ROOT,        SCAN,          RESTORE,       SOURCE_KIND,  REPAIR_PATH,
+                                   REPAIR_LOAD, REPAIR_IMAGES, REPAIR_BROWSE, FULL_PAYLOAD, WORKFLOW,
+                                   MODE_BOTH,   MODE_SFC,      PART_BOOT,     BOOT_TOOL,    BOOT_TOOL_BROWSE,
+                                   401,         402,           404,           NAV_WIM,      NAV_REPAIR})
         EnableWindow(GetDlgItem(window, id), !busy);
     EnableWindow(GetDlgItem(window, CANCEL), busy && !cancelled);
     EnableWindow(GetDlgItem(window, SOURCE_KIND), !busy && UsesCbs());
@@ -557,8 +550,7 @@ void BrowseFolder(int id) {
     selectedPartitions.erase(id);
     BROWSEINFOW b = {};
     b.hwndOwner = window;
-    b.lpszTitle = id == SFC_BOOT      ? L"选择离线系统实际启动分区根目录"
-                  : id == DEST        ? L"选择镜像释放目标"
+    b.lpszTitle = id == DEST          ? L"选择镜像释放目标"
                   : id == REPAIR_PATH ? L"选择独立健康来源的 Windows 目录或挂载根目录"
                                       : L"选择离线 Windows 所在根目录";
     b.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
@@ -826,11 +818,10 @@ servicing::SfcResult IsolatedSfc(const servicing::SfcOptions &o) {
         return result;
     }
     auto handleString = [](HANDLE h) { return std::to_wstring(reinterpret_cast<uintptr_t>(h)); };
-    std::wstring command =
-        Quote(executable) + L" --sfc-worker --pipe " + handleString(write) + L" --cancel-handle " +
-        handleString(event) +
-        (o.online ? L" --online" : L" --offline " + Quote(o.root) + L" --boot-root " + Quote(o.bootRoot)) +
-        (o.operation == servicing::SfcOperation::Repair ? L" --repair" : L" --verify");
+    std::wstring command = Quote(executable) + L" --sfc-worker --pipe " + handleString(write) +
+                           L" --cancel-handle " + handleString(event) +
+                           (o.online ? L" --online" : L" --offline " + Quote(o.root)) +
+                           (o.operation == servicing::SfcOperation::Repair ? L" --repair" : L" --verify");
     SIZE_T bytes = 0;
     InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
     std::vector<unsigned char> memory(bytes);
@@ -1101,12 +1092,10 @@ void Launch(int kind) {
     servicing::SfcOptions sfc;
     sfc.online = Checked(ONLINE);
     sfc.root = Text(ROOT);
-    sfc.bootRoot = Text(SFC_BOOT);
     sfc.operation =
         (kind == 3 || kind == 6) ? servicing::SfcOperation::Verify : servicing::SfcOperation::Repair;
     if (sfc.online) {
         sfc.root.clear();
-        sfc.bootRoot.clear();
     }
     bool chain = (kind == 3 || kind == 4) && Flow() == 1;
     if (kind == 6 || kind == 7) {
@@ -1116,7 +1105,7 @@ void Launch(int kind) {
                         L"运行中不能强制取消，只能等待当前阶段结束。是否继续？",
                         L"SFC 修复系统文件", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES)
             return;
-        if (!sfc.online && (!ResolvePartition(ROOT, sfc.root) || !ResolvePartition(SFC_BOOT, sfc.bootRoot)))
+        if (!sfc.online && !ResolvePartition(ROOT, sfc.root))
             return;
         SetBusy(true);
         Append(kind == 6 ? L"开始 SFC 完整验证。" : L"开始 SFC 修复及复验。");
@@ -1185,8 +1174,6 @@ void Launch(int kind) {
         if (!ResolvePartition(ROOT, o.root))
             return;
         sfc.root = o.root;
-        if (chain && !ResolvePartition(SFC_BOOT, sfc.bootRoot))
-            return;
     }
     SetBusy(true);
     Append(kind == 3 ? L"开始验证受损。" : L"开始修复受损。");
@@ -1321,24 +1308,17 @@ void Layout() {
         bottom = boot ? (biosTool ? 416 : 364) : 312;
         Place(APPLY, x, bottom + 18, 168, 40);
     } else {
-        bool offline = !Checked(ONLINE), cbs = UsesCbs(), sfc = UsesSfc();
+        bool offline = !Checked(ONLINE), cbs = UsesCbs();
         int y = 92;
-        int th = offline ? (sfc ? 168 : 120) : 72;
+        int th = offline ? 120 : 72;
         Card(x, y, cw, th);
         Place(ONLINE, x + 22, y + 20, 270, 30);
         for (int id : std::vector<int>{520, ROOT, 404})
             Visibility(id, offline);
-        for (int id : std::vector<int>{525, SFC_BOOT, SFC_BROWSE})
-            Visibility(id, offline && sfc);
         if (offline) {
             Place(520, x + 22, y + 76, 82, 24);
             Place(ROOT, x + 112, y + 68, cw - 216, 34);
             Place(404, w - 104, y + 68, 80, 34);
-            if (sfc) {
-                Place(525, x + 22, y + 124, 82, 24);
-                Place(SFC_BOOT, x + 112, y + 116, cw - 216, 34);
-                Place(SFC_BROWSE, w - 104, y + 116, 80, 34);
-            }
         }
         y += th + 16;
         int wh = cbs ? 112 : 72;
@@ -1462,9 +1442,6 @@ void Init() {
     Control(L"STATIC", L"系统分区", 0, 520, 1);
     Control(L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP, ROOT, 1);
     Control(L"BUTTON", L"分区…", WS_TABSTOP, 404, 1);
-    Control(L"STATIC", L"启动分区", 0, 525, 1);
-    Control(L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP, SFC_BOOT, 1);
-    Control(L"BUTTON", L"分区…", WS_TABSTOP, SFC_BROWSE, 1);
     Control(L"STATIC", L"维护方式", 0, 526, 1);
     Control(L"BUTTON", L"CBS", WS_TABSTOP, WORKFLOW, 1);
     Control(L"BUTTON", L"CBS + SFC", WS_TABSTOP, MODE_BOTH, 1);
@@ -1543,7 +1520,6 @@ void Init() {
         SetDlgItemTextW(window, DEST, L"G:\\");
         SetDlgItemTextW(window, BOOTPART, L"S:\\");
         SetDlgItemTextW(window, ROOT, L"G:\\");
-        SetDlgItemTextW(window, SFC_BOOT, L"S:\\");
         servicing::WimImage image;
         image.index = 3;
         image.name = L"Windows 11 Pro";
@@ -1569,7 +1545,7 @@ void Init() {
         workbench::Log(L"[示例] 2026-10-30 CBS Client: Manual; InnerFlags=2", false, L"CBS",
                        workbench::LogLevel::Detail);
     }
-    for (int id : {DEST, BOOTPART, ROOT, SFC_BOOT})
+    for (int id : {DEST, BOOTPART, ROOT})
         SendDlgItemMessageW(window, id, EM_SETCUEBANNER, TRUE, LPARAM(L"输入盘符根目录，或点击“分区…”"));
     SendDlgItemMessageW(window, BOOT_TOOL, EM_SETCUEBANNER, TRUE,
                         LPARAM(L"仅 BIOS 使用：微软 bootsect.exe；系统目录或安装光盘可自动查找"));
@@ -1644,7 +1620,7 @@ void Paint() {
         FillRect(dc, &accent, blue);
         DeleteObject(blue);
     }
-    for (int id : std::vector<int>{SOURCE, DEST, BOOTPART, ROOT, SFC_BOOT, REPAIR_PATH}) {
+    for (int id : std::vector<int>{SOURCE, DEST, BOOTPART, ROOT, REPAIR_PATH}) {
         auto child = GetDlgItem(window, id);
         if (!IsWindowVisible(child))
             continue;
@@ -1671,7 +1647,7 @@ void LaunchWorkflow(bool repair) {
                                                                                : L"SFC"));
     std::wstring config = L"目标=" + std::wstring(Checked(ONLINE) ? L"当前 Windows" : Text(ROOT));
     if (UsesSfc() && !Checked(ONLINE))
-        config += L"; 启动分区=" + Text(SFC_BOOT);
+        config += L"; SFC 离线启动目录=所选 Windows 分区";
     if (!repair)
         config += L"; 来源=检测不使用修复源";
     else if (!UsesCbs())
@@ -1801,9 +1777,6 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case PART_BOOT:
             ChoosePartition(BOOTPART);
             return 0;
-        case SFC_BROWSE:
-            ChoosePartition(SFC_BOOT);
-            return 0;
         case 401:
             BrowseFile();
             return 0;
@@ -1863,7 +1836,6 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case SOURCE:
         case DEST:
         case ROOT:
-        case SFC_BOOT:
         case REPAIR_PATH:
         case BOOTPART:
             if (HIWORD(w) == EN_SETFOCUS || HIWORD(w) == EN_KILLFOCUS) {
@@ -2029,9 +2001,7 @@ int SfcWorker(int count, wchar_t **args) {
                 o.online = false;
                 offline = true;
                 o.root = args[++i];
-            } else if (a == L"--boot-root" && i + 1 < count)
-                o.bootRoot = args[++i];
-            else if (a == L"--repair") {
+            } else if (a == L"--repair") {
                 if (++operations > 1)
                     return 2;
                 o.operation = servicing::SfcOperation::Repair;

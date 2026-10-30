@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "sfc_backend.h"
 #include "safety.h"
+#include "sfc_signature.h"
 #include <shlobj.h>
 #include <sddl.h>
 #include <winioctl.h>
@@ -235,22 +236,6 @@ HRESULT ActualHostBoot(std::vector<std::pair<DWORD, DWORD>> &parts) {
     worker.join();
     return result;
 }
-bool DevicePartition(const std::wstring &root, DWORD &disk, DWORD &partition) {
-    Handle volume(CreateFileW((L"\\\\.\\" + root.substr(0, 2)).c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                              nullptr, OPEN_EXISTING, 0, nullptr));
-    if (!volume.valid())
-        return false;
-    STORAGE_DEVICE_NUMBER device{};
-    DWORD n = 0;
-    if (!DeviceIoControl(volume.h, IOCTL_STORAGE_GET_DEVICE_NUMBER, nullptr, 0, &device, sizeof(device), &n,
-                         nullptr) ||
-        n < sizeof(device) || device.DeviceType != FILE_DEVICE_DISK || device.PartitionNumber == DWORD(-1) ||
-        !device.PartitionNumber)
-        return false;
-    disk = device.DeviceNumber;
-    partition = device.PartitionNumber;
-    return true;
-}
 bool X64(const std::wstring &p) {
     Handle f(CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                          nullptr, OPEN_EXISTING, 0, nullptr));
@@ -269,6 +254,125 @@ bool X64(const std::wstring &p) {
            sig == IMAGE_NT_SIGNATURE && ReadFile(f.h, &pe, sizeof(pe), &n, nullptr) && n == sizeof(pe) &&
            pe.Machine == IMAGE_FILE_MACHINE_AMD64;
 }
+
+// A PE RAM disk is a host environment, never an eligible offline target.
+bool RamDiskDevice(const std::wstring &device) {
+    const std::wstring prefix = L"\\Device\\Ramdisk";
+    if (device.size() < prefix.size() || _wcsnicmp(device.c_str(), prefix.c_str(), prefix.size()))
+        return false;
+    auto suffix = device.substr(prefix.size());
+    if (suffix.empty())
+        return true;
+    if (std::all_of(suffix.begin(), suffix.end(), [](wchar_t c) { return c >= L'0' && c <= L'9'; }))
+        return true;
+    GUID id{};
+    return suffix.size() == 38 && CLSIDFromString(suffix.c_str(), &id) == S_OK;
+}
+bool PeRamHost(const std::wstring &root) {
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\MiniNT", 0, KEY_READ, &key) !=
+        ERROR_SUCCESS)
+        return false;
+    RegCloseKey(key);
+    wchar_t device[32768]{};
+    return !Reparse(root) && QueryDosDeviceW(root.substr(0, 2).c_str(), device, 32768) &&
+           RamDiskDevice(device);
+}
+struct SfcTool {
+    Handle pin;
+    std::wstring exe, directory;
+    bool fallback = false;
+};
+bool OriginalSfc(const std::wstring &path) {
+    // Read the signed image resource itself, never version strings supplied by an external MUI file.
+    HMODULE image = LoadLibraryExW(path.c_str(), nullptr,
+                                   LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE | LOAD_LIBRARY_AS_IMAGE_RESOURCE);
+    if (!image)
+        return false;
+    struct ImageEnd {
+        HMODULE h;
+        ~ImageEnd() {
+            FreeLibrary(h);
+        }
+    } end{image};
+    HRSRC resource = FindResourceW(image, MAKEINTRESOURCEW(1), RT_VERSION);
+    DWORD size = resource ? SizeofResource(image, resource) : 0;
+    HGLOBAL loaded = resource ? LoadResource(image, resource) : nullptr;
+    auto raw = loaded ? static_cast<const BYTE *>(LockResource(loaded)) : nullptr;
+    if (!raw || !size || size > 1048576)
+        return false;
+    std::vector<BYTE> bytes(raw, raw + size);
+    struct Translation {
+        WORD language, codepage;
+    };
+    Translation *translations = nullptr;
+    UINT length = 0;
+    if (!VerQueryValueW(bytes.data(), L"\\VarFileInfo\\Translation", reinterpret_cast<void **>(&translations),
+                        &length) ||
+        !length || length % sizeof(Translation) || length > 256)
+        return false;
+    for (UINT i = 0; i < length / sizeof(Translation); ++i) {
+        wchar_t key[128]{};
+        swprintf(key, 128, L"\\StringFileInfo\\%04x%04x\\OriginalFilename", translations[i].language,
+                 translations[i].codepage);
+        wchar_t *value = nullptr;
+        UINT count = 0;
+        if (VerQueryValueW(bytes.data(), key, reinterpret_cast<void **>(&value), &count) && count &&
+            count < 256 && wmemchr(value, 0, count) && !_wcsicmp(value, L"sfc.exe"))
+            return true;
+    }
+    return false;
+}
+// Only a missing host binary triggers fallback. An access/validation failure must remain visible.
+bool CanFallback(bool online, DWORD attributes, DWORD error) {
+    return !online && attributes == INVALID_FILE_ATTRIBUTES &&
+           (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND);
+}
+HRESULT SelectToolPaths(bool online, const std::wstring &hostDirectory, const std::wstring &targetDirectory,
+                        SfcTool &tool, std::wstring &detail) {
+    tool.directory = hostDirectory;
+    tool.exe = Join(tool.directory, L"sfc.exe");
+    DWORD attrs = GetFileAttributesW(tool.exe.c_str());
+    DWORD missing = GetLastError();
+    if (CanFallback(online, attrs, missing)) {
+        tool.fallback = true;
+        tool.directory = targetDirectory;
+        tool.exe = Join(tool.directory, L"sfc.exe");
+    }
+    // Keep bytes non-writable/non-replaceable from validation through natural process exit.
+    tool.pin.h = CreateFileW(tool.exe.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                             FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (!tool.pin.valid()) {
+        detail = L"无法读取 SFC 程序：" + tool.exe;
+        return Error();
+    }
+    if (!File(tool.exe) || !X64(tool.exe)) {
+        detail = L"SFC 程序不是普通路径中的 x64 可执行文件：" + tool.exe;
+        return HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT);
+    }
+    std::wstring signature;
+    if (tool.fallback) {
+        HRESULT hr = VerifySfcSignature(tool.exe, tool.pin.h, tool.directory, signature);
+        if (hr != S_OK || !OriginalSfc(tool.exe)) {
+            detail = L"运行环境缺少 SFC；目标系统 SFC 的微软签名或程序身份校验失败：" + tool.exe;
+            return hr != S_OK ? hr : E_ACCESSDENIED;
+        }
+    }
+    detail = (tool.fallback ? L"运行环境缺少 SFC，回退到目标系统：" : L"使用运行环境 SFC：") + tool.exe;
+    if (!signature.empty())
+        detail += L"；" + signature;
+    return S_OK;
+}
+HRESULT SelectTool(const SfcOptions &o, SfcTool &tool, std::wstring &detail) {
+    wchar_t sys[32768]{};
+    UINT count = GetSystemDirectoryW(sys, 32768);
+    if (!count || count >= 32768) {
+        detail = L"无法定位运行环境的 System32 目录。";
+        return E_FAIL;
+    }
+    return SelectToolPaths(o.online, sys, Join(Root(o.root), L"Windows\\System32"), tool, detail);
+}
+
 std::wstring Quote(const std::wstring &s) {
     std::wstring out = L"\"";
     size_t slash = 0;
@@ -287,7 +391,7 @@ std::wstring Quote(const std::wstring &s) {
 std::wstring Command(const std::wstring &exe, const SfcOptions &o, const std::wstring &offLog) {
     std::wstring c = Quote(exe) + (o.operation == SfcOperation::Verify ? L" /verifyonly" : L" /scannow");
     if (!o.online)
-        c += L" " + Quote(L"/offbootdir=" + Root(o.bootRoot)) + L" " +
+        c += L" " + Quote(L"/offbootdir=" + Root(o.root)) + L" " +
              Quote(L"/offwindir=" + Join(Root(o.root), L"Windows")) + L" " + Quote(L"/offlogfile=" + offLog);
     return c;
 }
@@ -613,71 +717,45 @@ SfcResult ValidateSfcTarget(const SfcOptions &o) {
         return fail(E_NOTIMPL, L"无法可靠识别宿主 Windows 卷。");
     host = Root(host.substr(0, 3));
     std::wstring hostId;
-    if (!LocalVolume(host, hostId))
-        return fail(E_INVALIDARG, L"当前 Windows 卷不是可识别的实际本地卷。");
-    const auto exe = Join(sys, L"sfc.exe");
-    if (!File(exe) || !X64(exe))
-        return fail(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
-                    L"宿主 System32 缺少可信路径中的 x64 sfc.exe。");
+    const bool localHost = LocalVolume(host, hostId);
+    const bool peRam = !localHost && PeRamHost(host);
+    if (!localHost && !peRam)
+        return fail(E_INVALIDARG, L"当前 Windows 卷既不是可识别的本地卷，也不是确认过的 PE 内存盘。");
+    if (o.online && peRam)
+        return fail(E_NOTIMPL, L"PE 内存盘不作为在线 SFC 维护目标，请选择离线 Windows 分区。");
     if (o.online) {
         if (!o.root.empty() && !EqualI(Root(o.root), host))
             return fail(E_INVALIDARG, L"在线模式不能指定其他 Windows 根目录。");
-        if (!o.bootRoot.empty())
-            return fail(E_INVALIDARG, L"在线模式不接受离线启动目录。");
-        r.hr = S_OK;
-        r.detail = L"当前运行的 Windows；使用宿主 System32\\sfc.exe。";
+        SfcTool tool;
+        r.hr = SelectTool(o, tool, r.detail);
         return r;
     }
-    auto target = Root(o.root), boot = Root(o.bootRoot);
-    if (target.empty() || boot.empty())
-        return fail(E_INVALIDARG, L"离线 Windows 和启动目录必须明确填写独立的盘符根目录，例如 G:\\、S:\\。");
-    std::wstring targetId, bootId;
-    if (!LocalVolume(target, targetId) || !LocalVolume(boot, bootId))
-        return fail(E_INVALIDARG, L"不支持 UNC、SUBST、重解析路径或无法可靠识别的本地卷。");
-    if (EqualI(targetId, hostId) || EqualI(bootId, hostId))
-        return fail(E_INVALIDARG, L"离线 Windows 或启动目录不能映射到当前 Windows 卷。");
+    auto target = Root(o.root);
+    if (target.empty())
+        return fail(E_INVALIDARG, L"离线 Windows 必须是明确的盘符根目录，例如 G:\\。");
+    std::wstring targetId;
+    if (!LocalVolume(target, targetId))
+        return fail(E_INVALIDARG, L"不支持 UNC、SUBST、重解析路径或无法可靠识别的本地目标卷。");
+    if (EqualI(target, host) || (localHost && EqualI(targetId, hostId)))
+        return fail(E_INVALIDARG, L"离线 Windows 不能映射到当前运行的 Windows 卷。");
     if (!File(Join(target, L"Windows\\System32\\ntdll.dll")) ||
         !X64(Join(target, L"Windows\\System32\\ntdll.dll")) ||
         !File(Join(target, L"Windows\\System32\\ntoskrnl.exe")) ||
         !File(Join(target, L"Windows\\System32\\config\\SYSTEM")) ||
         !File(Join(target, L"Windows\\System32\\config\\SOFTWARE")))
         return fail(E_INVALIDARG, L"离线目标缺少完整的 x64 Windows 标志文件，或路径经过重解析点。");
-    std::vector<DWORD> hostDisks, bootDisks, targetDisks;
-    if (!Disks(host, hostDisks) || !Disks(boot, bootDisks) || !Disks(target, targetDisks))
-        return fail(E_INVALIDARG, L"无法可靠识别离线启动目录与宿主系统的物理磁盘，已停止预检。");
-    for (DWORD disk : bootDisks)
-        if (std::find(hostDisks.begin(), hostDisks.end(), disk) != hostDisks.end())
-            return fail(E_INVALIDARG, L"当前不支持离线启动目录与宿主 Windows 共用物理磁盘；不能使用宿主 ESP "
-                                      L"或同盘双系统启动分区。");
-    if (targetDisks.size() != 1 || bootDisks.size() != 1 || targetDisks[0] != bootDisks[0])
-        return fail(E_NOTIMPL,
-                    L"当前仅支持离线 Windows 与启动目录位于同一个独立物理磁盘；不支持跨盘启动布局。");
-    DWORD bootDisk = 0, bootPartition = 0;
-    if (!DevicePartition(boot, bootDisk, bootPartition) || bootDisk != bootDisks[0])
-        return fail(E_INVALIDARG, L"无法可靠识别离线启动分区的磁盘号和分区号。");
-    std::vector<std::pair<DWORD, DWORD>> hostBoot;
-    HRESULT bootHr = ActualHostBoot(hostBoot);
-    if (bootHr != S_OK)
-        return fail(
-            bootHr,
-            L"无法通过 Storage WMI IsSystem 可靠识别宿主实际启动分区，已保守停止；不会猜测启动目录归属。");
-    for (auto item : hostBoot)
-        if (item.first == bootDisk && item.second == bootPartition)
-            return fail(E_INVALIDARG,
-                        L"离线启动目录是宿主当前实际启动分区（可能为跨盘 ESP），禁止用于离线 SFC。");
+    std::vector<DWORD> targetDisks;
+    if (!Disks(target, targetDisks) || targetDisks.size() != 1)
+        return fail(E_NOTIMPL, L"无法可靠识别目标所在磁盘；不支持跨盘卷。");
     DWORD fsFlags = 0;
     if (!GetVolumeInformationW(target.c_str(), nullptr, 0, nullptr, nullptr, &fsFlags, nullptr, 0))
         return fail(Error(), L"无法读取目标 Windows 卷属性。");
     if (fsFlags & FILE_READ_ONLY_VOLUME)
         return fail(E_ACCESSDENIED, L"SFC 目标卷只读，无法维护或加载其注册表。");
-    bool bios = File(Join(boot, L"bootmgr")) && File(Join(boot, L"Boot\\BCD"));
-    bool efi = File(Join(boot, L"EFI\\Microsoft\\Boot\\bootmgfw.efi")) &&
-               File(Join(boot, L"EFI\\Microsoft\\Boot\\BCD"));
-    if (!bios && !efi)
-        return fail(E_INVALIDARG, L"启动目录缺少实际 Boot\\BCD+bootmgr 或 EFI\\Microsoft\\Boot 的 "
-                                  L"BCD+bootmgfw.efi；不能以 Windows 目录代替启动目录。");
-    r.hr = S_OK;
-    r.detail = L"已校验离线 Windows 与启动目录，使用宿主 System32\\sfc.exe。";
+    SfcTool tool;
+    r.hr = SelectTool(o, tool, r.detail);
+    if (r.hr == S_OK)
+        r.detail += L"；离线启动目录与 Windows 所在分区一致：" + target;
     return r;
 }
 namespace {
@@ -820,7 +898,7 @@ SfcResult RunCaptured(const SfcOptions &o, std::atomic_bool &stop, const SfcProg
     if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, TRUE,
                         EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW, nullptr, win.c_str(),
                         &startup.StartupInfo, &pi))
-        return fail(Error(), L"无法启动宿主 SFC；原始日志保留。");
+        return fail(Error(), L"无法启动选定的 SFC；未自动改用其他程序，原始日志保留。");
     Handle process(pi.hProcess), thread(pi.hThread);
     struct NaturalExit {
         Handle &process;
@@ -976,12 +1054,17 @@ SfcResult RunSfc(const SfcOptions &o, std::atomic_bool &stop, const SfcProgress 
         return fail(hr, L"无法创建本进程拥有的 SFC 日志目录。");
     if (o.online)
         r.offLog.clear();
-    wchar_t sys[32768]{}, win[32768]{};
-    UINT sn = GetSystemDirectoryW(sys, 32768), wn = GetWindowsDirectoryW(win, 32768);
-    if (!sn || sn >= 32768 || !wn || wn >= 32768)
-        return fail(Error(), L"无法定位宿主 SFC。");
-    const auto exe = Join(sys, L"sfc.exe");
-    return RunCaptured(o, stop, progress, r, exe, Command(exe, o, r.offLog), win);
+    SfcTool tool;
+    std::wstring selected;
+    hr = SelectTool(o, tool, selected);
+    Report(progress, selected);
+    if (hr != S_OK)
+        return fail(hr, selected.c_str());
+    auto command = Command(tool.exe, o, r.offLog);
+    Report(progress, L"SFC 命令：" + command);
+    if (tool.fallback)
+        Report(progress, L"目标 SFC 在当前运行环境中执行；依赖或版本不兼容将保留原始失败，不会自动重试。");
+    return RunCaptured(o, stop, progress, r, tool.exe, command, tool.directory);
 }
 
 int SfcSelfTest() {
@@ -991,6 +1074,30 @@ int SfcSelfTest() {
             ++fails;
     };
     check(Root(L"g:") == L"G:\\");
+    check(RamDiskDevice(L"\\Device\\Ramdisk0") &&
+          RamDiskDevice(L"\\Device\\Ramdisk{12345678-1234-1234-1234-123456789ABC}"));
+    check(!RamDiskDevice(L"\\Device\\HarddiskVolume1") && !RamDiskDevice(L"\\Device\\Ramdisk0\\other") &&
+          !RamDiskDevice(L"\\??\\X:"));
+    check(CanFallback(false, INVALID_FILE_ATTRIBUTES, ERROR_FILE_NOT_FOUND));
+    check(CanFallback(false, INVALID_FILE_ATTRIBUTES, ERROR_PATH_NOT_FOUND));
+    check(!CanFallback(true, INVALID_FILE_ATTRIBUTES, ERROR_FILE_NOT_FOUND) &&
+          !CanFallback(false, INVALID_FILE_ATTRIBUTES, ERROR_ACCESS_DENIED) &&
+          !CanFallback(false, FILE_ATTRIBUTE_NORMAL, ERROR_FILE_NOT_FOUND));
+    {
+        SfcOptions offline;
+        offline.online = false;
+        offline.root = L"G:";
+        auto cmd = Command(L"G:\\Windows\\System32\\sfc.exe", offline, L"C:\\logs\\sfc.txt");
+        int n = 0;
+        auto args = CommandLineToArgvW(cmd.c_str(), &n);
+        check(args && n == 5);
+        if (args && n == 5)
+            check(std::wstring(args[2]) == L"/offbootdir=G:\\" &&
+                  std::wstring(args[3]) == L"/offwindir=G:\\Windows");
+        if (args)
+            LocalFree(args);
+    }
+
     check(Root(L"G:\\Windows").empty() && Root(L"\\\\server\\share").empty() && Root(L"G:\\.").empty());
     {
         std::vector<int> seen;

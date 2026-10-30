@@ -11,7 +11,7 @@ enum class SfcOperation { Verify, Repair };
 enum class SfcReport { Unknown, Clean, Repaired, Unrepaired, Unable };
 struct SfcOptions {
     bool online = true;
-    std::wstring root, bootRoot;
+    std::wstring root; // Offline /offwindir and /offbootdir both derive from this validated root.
     SfcOperation operation = SfcOperation::Verify;
 };
 struct SfcResult {

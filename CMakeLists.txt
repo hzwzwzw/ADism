@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
-add_executable(ADism WIN32 src/gui.cpp src/ui_log.cpp src/partition_picker.cpp src/sfc_backend.cpp src/cbs_backend.cpp src/cbs_source_mount.cpp src/wim_backend.cpp src/boot_backend.cpp src/safety.cpp src/app.rc)
+add_executable(ADism WIN32 src/gui.cpp src/ui_log.cpp src/partition_picker.cpp src/sfc_backend.cpp src/sfc_signature.cpp src/cbs_backend.cpp src/cbs_source_mount.cpp src/wim_backend.cpp src/boot_backend.cpp src/safety.cpp src/app.rc)
 # Resource includes must trigger RC rebuilds in incremental MinGW/Ninja builds.
 set_source_files_properties(src/app.rc PROPERTIES OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/app.manifest")
 target_compile_definitions(ADism PRIVATE UNICODE _UNICODE WINVER=0x0602 _WIN32_WINNT=0x0602 NOMINMAX)
