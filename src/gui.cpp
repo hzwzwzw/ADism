@@ -2309,7 +2309,7 @@ int WINAPI wWinMain(HINSTANCE h, HINSTANCE, LPWSTR, int show) {
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     wc.lpszClassName = L"ADism.Main";
     RegisterClassExW(&wc);
-    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"ADism 0.7.0", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"ADism 0.7.1", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
                                 CW_USEDEFAULT, CW_USEDEFAULT, 1080, 980, nullptr, nullptr, h, nullptr);
     if (!hwnd)
         return 1;

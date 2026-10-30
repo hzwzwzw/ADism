@@ -2,9 +2,9 @@
 
 ADism 是一个用于 Windows 系统修复和镜像部署的原生图形工具。它把系统组件检查、系统文件修复、修复来源选择和 Windows 镜像释放放在同一个界面中，并保留执行过程与原始错误，便于判断任务完成到了哪一步。
 
-当前版本为 **0.7.0 Beta 1**，主要在 Windows 11 x64 环境验证。
+当前版本为 **0.7.1 Beta 1**，主要在 Windows 11 x64 环境验证。
 
-[下载测试版](https://github.com/hzwzwzw/ADism/releases/tag/v0.7.0-beta.1) · [验证范围](docs/validation.md) · [问题反馈](https://github.com/hzwzwzw/ADism/issues)
+[下载测试版](https://github.com/hzwzwzw/ADism/releases/tag/v0.7.1-beta.1) · [验证范围](docs/validation.md) · [问题反馈](https://github.com/hzwzwzw/ADism/issues)
 
 ## 功能
 
@@ -20,7 +20,7 @@ ADism 是一个用于 Windows 系统修复和镜像部署的原生图形工具�
 
 ## 开始使用
 
-从 Releases 下载 `ADism-0.7.0-beta.1-win64.zip`，解压后运行 `ADism.exe`，接受 Windows 的管理员权限提示。程序为便携式应用，解压后即可运行。当前测试构建尚未进行代码签名。
+从 Releases 下载 `ADism-0.7.1-beta.1-win64.zip`，解压后运行 `ADism.exe`，接受 Windows 的管理员权限提示。程序为便携式应用，解压后即可运行。当前测试构建尚未进行代码签名。
 
 系统维护和镜像部署都会写入所选系统或分区。开始前请备份重要数据，核对目标的卷标、容量和设备标识；首次使用建议选择虚拟机或可恢复的测试磁盘。
 
